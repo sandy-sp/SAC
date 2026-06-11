@@ -1,0 +1,28 @@
+{
+  "campaign_id": "summer-winter-glow-2026",
+  "target_regions": [
+    "US",
+    "DE",
+    "JP"
+  ],
+  "target_audiences": [
+    "Young professionals 25-34",
+    "Skincare enthusiasts"
+  ],
+  "campaign_messages": [
+    "Glow all summer long with clean, lightweight hydration.",
+    "Get a guaranteed glow! Winter skin, fully restored."
+  ],
+  "products": [
+    {
+      "product_id": "summer-skincare-bundle",
+      "name": "Summer Skincare Bundle",
+      "description": "A lightweight SPF moisturizer, vitamin C serum, and cooling mist for sun-soaked days."
+    },
+    {
+      "product_id": "winter-hydration-kit",
+      "name": "Winter Hydration Kit",
+      "description": "A rich ceramide cream, overnight repair mask, and nourishing lip balm for cold climates."
+    }
+  ]
+}

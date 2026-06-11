@@ -18,14 +18,23 @@ from pathlib import Path
 
 import streamlit as st
 import yaml
+from dotenv import load_dotenv
 from PIL import Image
 from pydantic import ValidationError
 
 from src.guardrails import PROHIBITED_WORDS, validate_campaign_message
 from src.image_processor import SUPPORTED_RATIOS, ImageProcessor, WatermarkMissingError
 from src.models import CampaignBrief
-from src.providers import MockImageProvider
+from src.prompt_builder import build_image_prompt
+from src.providers import (
+    AwsBedrockProvider,
+    BedrockGenerationError,
+    ImageGenerationProvider,
+    MockImageProvider,
+)
 from src.utils import merge_and_persist_brief
+
+load_dotenv()
 
 ASSETS_DIR = Path("assets")
 OUTPUTS_DIR = Path("outputs")
@@ -72,7 +81,7 @@ def campaign_assets_dir(campaign_id: str) -> Path:
 
 
 def resolve_base_image(
-    campaign_id: str, product_id: str, prompt: str, provider: MockImageProvider
+    campaign_id: str, product_id: str, prompt: str, provider: ImageGenerationProvider
 ) -> tuple[Image.Image, bool]:
     """Reuse a sandboxed local asset when present, otherwise generate (FR-2/FR-3)."""
     directory = campaign_assets_dir(campaign_id)
@@ -216,6 +225,16 @@ def render_sidebar() -> bool:
         st.rerun()
 
     st.sidebar.divider()
+    st.sidebar.subheader("⚙️ AI Generation Mode")
+    st.sidebar.selectbox(
+        "AI Generation Mode: Mock vs. AWS Bedrock",
+        ["Mock (offline placeholder)", "AWS Bedrock (live GenAI)"],
+        key="provider_mode",
+        help="Mock needs no credentials; AWS Bedrock requires a configured "
+        ".env / AWS profile (see .env.example).",
+    )
+
+    st.sidebar.divider()
     st.sidebar.subheader("1 · Campaign Brief")
     mode = st.sidebar.radio(
         "Brief source",
@@ -241,9 +260,16 @@ def render_brief_summary(brief: CampaignBrief) -> None:
         col4.metric("Audiences", len(brief.target_audiences))
 
 
-def run_pipeline(brief: CampaignBrief) -> None:
+def make_provider() -> ImageGenerationProvider:
+    """Instantiate the GenAI backend chosen in the sidebar toggle."""
+    if str(st.session_state.get("provider_mode", "")).startswith("AWS Bedrock"):
+        return AwsBedrockProvider()
+    return MockImageProvider()
+
+
+def run_pipeline(brief: CampaignBrief, provider: ImageGenerationProvider) -> None:
     """Execute the locked core pipeline product-by-product with live UI feedback."""
-    provider = MockImageProvider()
+    st.caption(f"GenAI provider: `{provider.provider_name}`")
     processor = ImageProcessor()
     campaign_dir = OUTPUTS_DIR / brief.campaign_id
 
@@ -282,7 +308,7 @@ def run_pipeline(brief: CampaignBrief) -> None:
             )
             continue
 
-        prompt = f"Product photo: {product.name}. {product.description}"
+        prompt = build_image_prompt(brief, product)
         with st.spinner(f"Resolving base asset for {product.product_id}…"):
             base_image, reused = resolve_base_image(
                 brief.campaign_id, product.product_id, prompt, provider
@@ -299,6 +325,8 @@ def run_pipeline(brief: CampaignBrief) -> None:
                 f"✦ No local asset — generated via provider `{provider.provider_name}`",
                 icon="🤖",
             )
+            with st.expander("🪄 Generation prompt"):
+                st.code(prompt, language=None, wrap_lines=True)
 
         output_paths: dict[str, Path] = {}
         product_dir = campaign_dir / product.product_id
@@ -390,9 +418,17 @@ def main() -> None:
     render_brief_summary(brief)
 
     try:
-        run_pipeline(brief)
+        run_pipeline(brief, make_provider())
     except WatermarkMissingError as exc:
         st.error(f"**Brand compliance failure (GR-2):** {exc}", icon="🛑")
+    except BedrockGenerationError as exc:
+        st.error(
+            f"**GenAI provider failure (AWS Bedrock):** {exc}\n\n"
+            f"Check your `.env` / AWS credentials (see `.env.example`) and "
+            f"that the model is enabled in your Bedrock region — or switch "
+            f"back to Mock mode in the sidebar.",
+            icon="☁️",
+        )
 
 
 if __name__ == "__main__":

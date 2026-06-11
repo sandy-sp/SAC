@@ -7,6 +7,9 @@ __pycache__/
 # OS
 .DS_Store
 
+# Secrets — only .env.example belongs in git
+.env
+
 # Generated creatives (keep folder, ignore contents)
 outputs/*
 !outputs/.gitkeep

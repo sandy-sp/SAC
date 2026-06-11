@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from PIL import Image
 from pydantic import ValidationError
 from rich.console import Console
@@ -31,7 +32,13 @@ from rich.table import Table
 from src.guardrails import validate_campaign_message
 from src.image_processor import SUPPORTED_RATIOS, ImageProcessor, WatermarkMissingError
 from src.models import CampaignBrief
-from src.providers import MockImageProvider
+from src.prompt_builder import build_image_prompt
+from src.providers import (
+    AwsBedrockProvider,
+    BedrockGenerationError,
+    ImageGenerationProvider,
+    MockImageProvider,
+)
 from src.utils import merge_and_persist_brief
 
 ASSETS_DIR = Path("assets")
@@ -52,7 +59,19 @@ def parse_args() -> argparse.Namespace:
         default=Path("inputs/mock_brief.json"),
         help="Path to the campaign brief JSON file (default: inputs/mock_brief.json)",
     )
+    parser.add_argument(
+        "--provider",
+        choices=["mock", "aws"],
+        default="mock",
+        help="GenAI image backend: 'mock' (offline placeholder) or 'aws' (Bedrock)",
+    )
     return parser.parse_args()
+
+
+def make_provider(name: str) -> ImageGenerationProvider:
+    if name == "aws":
+        return AwsBedrockProvider()
+    return MockImageProvider()
 
 
 def load_brief(path: Path) -> CampaignBrief:
@@ -79,7 +98,7 @@ def load_brief(path: Path) -> CampaignBrief:
 
 
 def resolve_base_image(
-    campaign_id: str, product_id: str, prompt: str, provider: MockImageProvider
+    campaign_id: str, product_id: str, prompt: str, provider: ImageGenerationProvider
 ) -> tuple[Image.Image, bool]:
     """Return the product's base image and whether a local asset was reused (FR-2/FR-3).
 
@@ -102,6 +121,7 @@ def resolve_base_image(
 
 
 def main() -> None:
+    load_dotenv()
     args = parse_args()
 
     console.print(
@@ -126,7 +146,8 @@ def main() -> None:
         f"audiences: {len(brief.target_audiences)}"
     )
 
-    provider = MockImageProvider()
+    provider = make_provider(args.provider)
+    console.print(f"[bold]GenAI provider:[/bold] {provider.provider_name}")
     processor = ImageProcessor()
     campaign_dir = OUTPUTS_DIR / brief.campaign_id
 
@@ -165,7 +186,7 @@ def main() -> None:
                 progress.advance(pipeline_task, len(SUPPORTED_RATIOS))
                 continue
 
-            prompt = f"Product photo: {product.name}. {product.description}"
+            prompt = build_image_prompt(brief, product)
             base_image, reused = resolve_base_image(
                 brief.campaign_id, product.product_id, prompt, provider
             )
@@ -209,4 +230,7 @@ if __name__ == "__main__":
         main()
     except WatermarkMissingError as exc:
         console.print(f"[bold red]✗ Brand compliance failure (GR-2):[/bold red] {exc}")
+        sys.exit(1)
+    except BedrockGenerationError as exc:
+        console.print(f"[bold red]✗ GenAI provider failure:[/bold red] {exc}")
         sys.exit(1)

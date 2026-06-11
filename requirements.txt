@@ -18,5 +18,8 @@ PyYAML
 # AWS integration (Bedrock image generation strategy)
 boto3
 
+# Environment variable loading (.env for cloud credentials/region)
+python-dotenv
+
 # GCP integration (Vertex AI image generation strategy)
 google-cloud-aiplatform
