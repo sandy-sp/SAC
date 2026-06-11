@@ -34,7 +34,7 @@ from src.providers import (
     MockImageProvider,
     ProviderGenerationError,
 )
-from src.utils import merge_and_persist_brief
+from src.utils import merge_and_persist_brief, validate_safe_id
 
 load_dotenv()
 
@@ -97,6 +97,8 @@ def resolve_base_image(
 
 def save_uploaded_asset(campaign_id: str, product_id: str, uploaded_file) -> Path:
     """Persist a manually uploaded base image into the campaign sandbox."""
+    validate_safe_id(campaign_id, "campaign_id")
+    validate_safe_id(product_id, "product_id")
     extension = Path(uploaded_file.name).suffix.lower()
     if extension not in ASSET_EXTENSIONS:
         extension = ".png"
@@ -209,9 +211,13 @@ def render_manual_builder() -> bool:
     if payload["campaign_id"]:
         for entry in product_inputs:
             if entry["image"] is not None and entry["product_id"].strip():
-                saved = save_uploaded_asset(
-                    payload["campaign_id"], entry["product_id"].strip(), entry["image"]
-                )
+                try:
+                    saved = save_uploaded_asset(
+                        payload["campaign_id"], entry["product_id"].strip(), entry["image"]
+                    )
+                except ValueError as exc:
+                    st.sidebar.error(f"Asset not saved: {exc}")
+                    continue
                 st.sidebar.info(f"Saved asset: `{saved}`", icon="🖼️")
 
     return True
@@ -500,7 +506,11 @@ def main() -> None:
 
     # Campaign merging: combine with the stored brief for this campaign_id
     # (if any) and persist the result before executing.
-    brief, was_merged = merge_and_persist_brief(brief)
+    try:
+        brief, was_merged = merge_and_persist_brief(brief)
+    except ValueError as exc:
+        st.error(f"**Brief rejected:** {exc}", icon="🚫")
+        return
     st.session_state["brief_payload"] = brief.model_dump()
     if was_merged:
         st.info(

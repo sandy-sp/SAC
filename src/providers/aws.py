@@ -12,6 +12,7 @@ families are supported, selected automatically from the model_id:
 """
 
 import base64
+import binascii
 import json
 import os
 
@@ -138,7 +139,12 @@ class AwsBedrockProvider(ImageGenerationProvider):
             console.print(f"[bold red]✗ AWS SDK error:[/bold red] {exc}")
             raise BedrockGenerationError(f"AWS SDK error: {exc}") from exc
 
-        return self._extract_image(body)
+        try:
+            return self._extract_image(body)
+        except (binascii.Error, ValueError) as exc:
+            raise BedrockGenerationError(
+                f"Bedrock returned malformed image data from {self.model_id}: {exc}"
+            ) from exc
 
     # -- payload formatting per model family --------------------------------
 

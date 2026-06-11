@@ -143,7 +143,11 @@ def main() -> None:
     )
 
     brief = load_brief(args.brief)
-    brief, was_merged = merge_and_persist_brief(brief)
+    try:
+        brief, was_merged = merge_and_persist_brief(brief)
+    except ValueError as exc:
+        console.print(f"[bold red]✗ Brief rejected:[/bold red] {exc}")
+        sys.exit(1)
     if was_merged:
         console.print(
             f"[bold cyan]⇄ Campaign[/bold cyan] [bold]{brief.campaign_id}[/bold] "

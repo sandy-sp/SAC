@@ -111,10 +111,12 @@ class ImageGenerationProvider(ABC):
 
 #### 4.2 Required Concrete Strategies
 
-| Strategy | Cloud | Backing Service | SDK |
-|----------|-------|-----------------|-----|
-| `BedrockImageProvider` | AWS | Amazon Bedrock (e.g., Titan Image Generator / Stable Diffusion) | `boto3` |
-| `VertexImageProvider` | GCP | Vertex AI (e.g., Imagen) | `google-cloud-aiplatform` |
+| Strategy | Cloud | Backing Service | SDK / Transport |
+|----------|-------|-----------------|-----------------|
+| `AwsBedrockProvider` | AWS | Amazon Bedrock (Stability next-gen / SDXL / Titan-Nova payload families) | `boto3` |
+| `GoogleStudioProvider` | Google | Google AI Studio (Gemini image generation, API-key auth) | `google-generativeai` |
+| `FireflyProvider` | Adobe | Firefly Image API (S2S OAuth via Adobe IMS) | `requests` (REST) |
+| `MockImageProvider` | — | Local Pillow placeholder (offline development, NFR-3) | `Pillow` |
 
 #### 4.3 Selection & Extensibility
 
@@ -142,18 +144,51 @@ The system SHALL produce creatives in **at least three (3) aspect ratios** per p
 ### FR-7: Organized Output
 
 - Final creatives SHALL be saved to the local `outputs/` directory.
-- Outputs SHALL be **clearly organized by product and aspect ratio**:
+- Outputs SHALL be **clearly organized by product and aspect ratio**,
+  saved as flat files named `{ratio}_final.png` inside each product
+  folder (not in per-ratio subdirectories):
 
 ```
 outputs/
 └── <campaign_id>/
     ├── <product_id>/
-    │   ├── 1x1/<creative>.png
-    │   ├── 9x16/<creative>.png
-    │   └── 16x9/<creative>.png
+    │   ├── 1x1_final.png
+    │   ├── 9x16_final.png
+    │   └── 16x9_final.png
     └── <product_id_2>/
         └── ...
 ```
+
+### FR-8: Campaign Merging (Upsert)
+
+- A brief whose `campaign_id` already exists in `inputs/` (as
+  `inputs/{campaign_id}.json`) SHALL be **merged** with the stored brief
+  before the pipeline runs:
+  - `target_regions` / `target_audiences`: union, deduplicated, order
+    preserved (existing entries first).
+  - `products`: **upsert** keyed on `product_id` — existing products get
+    their details (and paired campaign message) replaced; new products
+    are appended.
+  - `campaign_messages` remain aligned one-per-product so the
+    `message[i] ↔ product[i]` pairing survives the merge.
+- The merged result SHALL be written back to `inputs/{campaign_id}.json`,
+  making the stored brief the cumulative source of truth per campaign.
+- `campaign_id` / `product_id` values SHALL be validated as safe single
+  path segments (no separators or `..`) before any filesystem write.
+
+### FR-9: Provider-Agnostic BYOK (Bring Your Own Key)
+
+- The `ImageGenerationProvider` interface SHALL accept an optional
+  `credentials: dict` whose keys are provider-specific (AWS access
+  key/secret/session token, Adobe client id/secret, Google API key).
+- When credentials are omitted or empty, providers SHALL fall back to
+  their environment-default credential chain (`.env`, `~/.aws`,
+  `FIREFLY_*`, `GOOGLE_API_KEY`).
+- Credential values MUST never be printed, logged, or persisted to disk;
+  in the web UI they live only in the Streamlit session (masked inputs)
+  and are cleared by the session reset control.
+- All provider failures SHALL surface as a single generic
+  `ProviderGenerationError` so UI layers handle any backend uniformly.
 
 ---
 
@@ -217,9 +252,12 @@ SAC/
 |---------|---------|
 | `Pillow` | Image processing: resize/crop to aspect ratios, text rendering, watermark overlay |
 | `rich` | CLI UX: progress bars, styled logging, summary tables |
+| `streamlit` | Web front-end (brief import/builder, live pipeline feedback, creative gallery) |
 | `pydantic` | Brief schema validation |
 | `boto3` | AWS Bedrock image generation strategy |
-| `google-cloud-aiplatform` | GCP Vertex AI image generation strategy |
+| `google-generativeai` | Google AI Studio (Gemini) image generation strategy |
+| `requests` | Adobe Firefly REST integration (S2S OAuth + Image API) |
+| `python-dotenv` | Environment/credential loading from `.env` |
 | `PyYAML` | YAML brief parsing (implied by FR-1 JSON/YAML support) |
 
 ---
@@ -236,10 +274,10 @@ SAC/
 
 ## 10. Acceptance Criteria
 
-1. Given a valid JSON or YAML brief with ≥2 products, the pipeline produces creatives for every product in **all three aspect ratios**, organized under `outputs/<campaign>/<product>/<ratio>/`.
+1. Given a valid JSON or YAML brief with ≥2 products, the pipeline produces creatives for every product in **all three aspect ratios**, saved as `outputs/<campaign>/<product>/{ratio}_final.png`.
 2. Given a product with a matching local asset in `assets/`, that asset is **reused** (no GenAI call).
 3. Given a product with no local asset, an image is **generated** via the configured provider strategy.
-4. Switching `--provider` between `aws` and `gcp` requires **zero pipeline code changes**.
+4. Switching `--provider` between `mock`, `aws`, `firefly`, and `google` requires **zero pipeline code changes**.
 5. A campaign message containing a prohibited word is **flagged and blocked** before image processing.
 6. Every output creative contains the **rendered campaign message** and the **brand watermark**.
 7. The CLI run displays **progress bars** and ends with a **styled execution summary**.

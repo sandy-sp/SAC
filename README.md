@@ -21,9 +21,10 @@ Built for a global consumer goods scenario: hundreds of localized campaigns per 
                               ┌───────────▼────────────┐
                               │ ImageGenerationProvider │  ◀── Strategy interface (ABC)
                               ├────────────────────────┤
-                              │ MockImageProvider       │  (offline, implemented)
-                              │ BedrockImageProvider    │  (AWS, planned)
-                              │ VertexImageProvider     │  (GCP, planned)
+                              │ MockImageProvider       │  (offline placeholder)
+                              │ AwsBedrockProvider      │  (AWS Bedrock, live)
+                              │ FireflyProvider         │  (Adobe Firefly, live)
+                              │ GoogleStudioProvider    │  (Google AI Studio, live)
                               └────────────────────────┘
 ```
 
@@ -39,6 +40,7 @@ Built for a global consumer goods scenario: hundreds of localized campaigns per 
 | `src/image_processor.py` | Aspect-ratio cropping, text rendering, watermark overlay (FR-5/6, GR-2) |
 | `src/providers/base.py` | `ImageGenerationProvider` strategy interface (FR-4) |
 | `src/providers/mock.py` | Offline mock provider — Pillow placeholder, no cloud calls (NFR-3) |
+| `src/providers/aws.py`, `firefly.py`, `google_studio.py` | Live GenAI strategies — AWS Bedrock, Adobe Firefly (S2S OAuth), Google AI Studio (BYOK or env credentials) |
 
 ### Design Decisions
 
@@ -92,7 +94,7 @@ The original CLI remains available for scripted or terminal-only use:
 
 ```bash
 python main.py                          # uses inputs/mock_brief.json
-python main.py --brief inputs/my.json   # custom brief
+python main.py --brief inputs/summer-winter-glow-2026.json   # custom brief
 ```
 
 ### Campaign Brief Format
@@ -126,6 +128,14 @@ outputs/
 ```
 
 Every creative carries the rendered campaign message (wrapped, on a contrast band) and the brand watermark (bottom-right) — both are mandatory.
+
+---
+
+## Assumptions and Limitations
+
+- Input campaign messages are assumed to be in English.
+- Output image resolution and generation speed are strictly bounded by the selected GenAI provider's API limits.
+- For local asset reuse, the user-provided filenames must exactly match the `product_id` (e.g., `product_id.jpg`) and reside in the correct campaign sandbox directory.
 
 ---
 

@@ -26,6 +26,3 @@ requests
 
 # Google AI Studio integration (Gemini image generation)
 google-generativeai
-
-# GCP integration (Vertex AI image generation strategy)
-google-cloud-aiplatform
