@@ -28,9 +28,11 @@ from src.models import CampaignBrief
 from src.prompt_builder import build_image_prompt
 from src.providers import (
     AwsBedrockProvider,
-    BedrockGenerationError,
+    FireflyProvider,
+    GoogleStudioProvider,
     ImageGenerationProvider,
     MockImageProvider,
+    ProviderGenerationError,
 )
 from src.utils import merge_and_persist_brief
 
@@ -227,12 +229,18 @@ def render_sidebar() -> bool:
     st.sidebar.divider()
     st.sidebar.subheader("⚙️ AI Generation Mode")
     st.sidebar.selectbox(
-        "AI Generation Mode: Mock vs. AWS Bedrock",
-        ["Mock (offline placeholder)", "AWS Bedrock (live GenAI)"],
+        "AI Generation Mode",
+        [
+            "Mock (offline placeholder)",
+            "AWS Bedrock (live GenAI)",
+            "Adobe Firefly (live GenAI)",
+            "Google AI Studio (live GenAI)",
+        ],
         key="provider_mode",
-        help="Mock needs no credentials; AWS Bedrock requires a configured "
-        ".env / AWS profile (see .env.example).",
+        help="Mock needs no credentials; live providers use your BYOK keys "
+        "below, falling back to environment defaults (see .env.example).",
     )
+    render_byok_inputs()
 
     st.sidebar.divider()
     st.sidebar.subheader("1 · Campaign Brief")
@@ -260,10 +268,96 @@ def render_brief_summary(brief: CampaignBrief) -> None:
         col4.metric("Audiences", len(brief.target_audiences))
 
 
+def selected_provider_kind() -> str:
+    """Short provider key from the sidebar toggle: mock | aws | firefly | google."""
+    mode = str(st.session_state.get("provider_mode", ""))
+    if mode.startswith("AWS Bedrock"):
+        return "aws"
+    if mode.startswith("Adobe Firefly"):
+        return "firefly"
+    if mode.startswith("Google AI Studio"):
+        return "google"
+    return "mock"
+
+
+def render_byok_inputs() -> None:
+    """Provider-specific Bring Your Own Key UI (sidebar).
+
+    Dispatches on the selected provider. To support a new backend later,
+    add an elif branch rendering its credential widgets (e.g. a GCP
+    service-account JSON uploader for a Vertex provider) and collect the
+    values in collect_credentials(). Mock needs no keys, so no expander.
+    Values live only in st.session_state (cleared by Start Over) and are
+    never written to disk or logged.
+    """
+    kind = selected_provider_kind()
+    if kind == "aws":
+        with st.sidebar.expander("🔑 Bring Your Own Key (AWS)"):
+            st.text_input("AWS Access Key ID", type="password", key="byok_aws_access_key_id")
+            st.text_input(
+                "AWS Secret Access Key", type="password", key="byok_aws_secret_access_key"
+            )
+            st.text_input(
+                "AWS Session Token (optional)", type="password", key="byok_aws_session_token"
+            )
+            st.caption(
+                "Leave empty to use the environment default (.env / AWS profile). "
+                "Keys stay in this session only."
+            )
+    elif kind == "firefly":
+        with st.sidebar.expander("🔑 Bring Your Own Key (Adobe Firefly)"):
+            st.text_input("Client ID", type="password", key="byok_firefly_client_id")
+            st.text_input("Client Secret", type="password", key="byok_firefly_client_secret")
+            st.caption(
+                "Adobe Developer Console S2S credentials. Exchanged for a "
+                "short-lived IMS token at run time; stored in this session only."
+            )
+    elif kind == "google":
+        with st.sidebar.expander("🔑 Bring Your Own Key (Google AI Studio)"):
+            st.text_input("API Key", type="password", key="byok_google_api_key")
+            st.caption(
+                "Gemini API key from aistudio.google.com. Stored in this "
+                "session only."
+            )
+    # mock: no credentials required — no expander.
+
+
+_BYOK_FIELDS: dict[str, dict[str, str]] = {
+    # provider kind -> {credentials dict key: session_state key}
+    "aws": {
+        "aws_access_key_id": "byok_aws_access_key_id",
+        "aws_secret_access_key": "byok_aws_secret_access_key",
+        "aws_session_token": "byok_aws_session_token",
+    },
+    "firefly": {
+        "client_id": "byok_firefly_client_id",
+        "client_secret": "byok_firefly_client_secret",
+    },
+    "google": {
+        "api_key": "byok_google_api_key",
+    },
+}
+
+
+def collect_credentials() -> dict:
+    """Pack the BYOK session values into a provider-agnostic credentials dict."""
+    fields = _BYOK_FIELDS.get(selected_provider_kind(), {})
+    return {
+        cred_key: str(st.session_state.get(state_key, "")).strip()
+        for cred_key, state_key in fields.items()
+        if str(st.session_state.get(state_key, "")).strip()
+    }
+
+
 def make_provider() -> ImageGenerationProvider:
     """Instantiate the GenAI backend chosen in the sidebar toggle."""
-    if str(st.session_state.get("provider_mode", "")).startswith("AWS Bedrock"):
-        return AwsBedrockProvider()
+    kind = selected_provider_kind()
+    if kind == "aws":
+        return AwsBedrockProvider(credentials=collect_credentials())
+    if kind == "firefly":
+        return FireflyProvider(credentials=collect_credentials())
+    if kind == "google":
+        return GoogleStudioProvider(credentials=collect_credentials())
     return MockImageProvider()
 
 
@@ -334,7 +428,8 @@ def run_pipeline(brief: CampaignBrief, provider: ImageGenerationProvider) -> Non
             with st.spinner(f"Composing {product.product_id} @ {ratio}…"):
                 creative = processor.crop_to_aspect_ratio(base_image, ratio)
                 creative = processor.render_text(creative, message)
-                creative = processor.apply_watermark(creative)  # GR-2 hard gate
+                # GR-2 hard gate; campaign brand kit falls back to global mark
+                creative = processor.apply_watermark(creative, brief.campaign_id)
 
                 product_dir.mkdir(parents=True, exist_ok=True)
                 output_path = product_dir / f"{ratio.replace(':', 'x')}_final.png"
@@ -421,12 +516,11 @@ def main() -> None:
         run_pipeline(brief, make_provider())
     except WatermarkMissingError as exc:
         st.error(f"**Brand compliance failure (GR-2):** {exc}", icon="🛑")
-    except BedrockGenerationError as exc:
+    except ProviderGenerationError as exc:
         st.error(
-            f"**GenAI provider failure (AWS Bedrock):** {exc}\n\n"
-            f"Check your `.env` / AWS credentials (see `.env.example`) and "
-            f"that the model is enabled in your Bedrock region — or switch "
-            f"back to Mock mode in the sidebar.",
+            f"**GenAI provider failure:** {exc}\n\n"
+            f"Check your BYOK credentials / environment configuration "
+            f"(see `.env.example`) — or switch back to Mock mode in the sidebar.",
             icon="☁️",
         )
 

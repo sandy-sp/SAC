@@ -35,9 +35,11 @@ from src.models import CampaignBrief
 from src.prompt_builder import build_image_prompt
 from src.providers import (
     AwsBedrockProvider,
-    BedrockGenerationError,
+    FireflyProvider,
+    GoogleStudioProvider,
     ImageGenerationProvider,
     MockImageProvider,
+    ProviderGenerationError,
 )
 from src.utils import merge_and_persist_brief
 
@@ -61,16 +63,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["mock", "aws"],
+        choices=["mock", "aws", "firefly", "google"],
         default="mock",
-        help="GenAI image backend: 'mock' (offline placeholder) or 'aws' (Bedrock)",
+        help="GenAI image backend: 'mock' (offline placeholder), 'aws' (Bedrock), "
+        "'firefly' (Adobe), or 'google' (AI Studio). Live providers read "
+        "credentials from the environment/.env in headless mode.",
     )
     return parser.parse_args()
 
 
 def make_provider(name: str) -> ImageGenerationProvider:
+    # Empty credentials dict: headless mode always defers to the
+    # environment (.env / AWS profile / FIREFLY_* / GOOGLE_API_KEY).
     if name == "aws":
-        return AwsBedrockProvider()
+        return AwsBedrockProvider(credentials={})
+    if name == "firefly":
+        return FireflyProvider(credentials={})
+    if name == "google":
+        return GoogleStudioProvider(credentials={})
     return MockImageProvider()
 
 
@@ -201,7 +211,8 @@ def main() -> None:
                 )
                 creative = processor.crop_to_aspect_ratio(base_image, ratio)
                 creative = processor.render_text(creative, message)
-                creative = processor.apply_watermark(creative)  # GR-2 hard gate
+                # GR-2 hard gate; campaign brand kit falls back to global mark
+                creative = processor.apply_watermark(creative, brief.campaign_id)
 
                 product_dir.mkdir(parents=True, exist_ok=True)
                 output_path = product_dir / f"{ratio.replace(':', 'x')}_final.png"
@@ -231,6 +242,6 @@ if __name__ == "__main__":
     except WatermarkMissingError as exc:
         console.print(f"[bold red]✗ Brand compliance failure (GR-2):[/bold red] {exc}")
         sys.exit(1)
-    except BedrockGenerationError as exc:
+    except ProviderGenerationError as exc:
         console.print(f"[bold red]✗ GenAI provider failure:[/bold red] {exc}")
         sys.exit(1)
