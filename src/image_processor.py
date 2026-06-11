@@ -59,20 +59,44 @@ class ImageProcessor:
         # overflow, so the source is never stretched.
         return ImageOps.fit(image, target, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
-    def apply_watermark(self, image: Image.Image) -> Image.Image:
+    def resolve_watermark_path(self, campaign_id: str | None = None) -> Path:
+        """Resolve the brand mark via the campaign-kit fallback hierarchy.
+
+        1. assets/{campaign_id}/watermark.png  (campaign-specific brand kit)
+        2. assets/watermark.png                (global brand)
+        3. WatermarkMissingError               (GR-2 hard gate)
+        """
+        candidates = []
+        if campaign_id:
+            candidates.append(
+                self.watermark_path.parent / campaign_id / self.watermark_path.name
+            )
+        candidates.append(self.watermark_path)
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+
+        raise WatermarkMissingError(
+            f"No brand watermark found (checked: "
+            f"{', '.join(str(c) for c in candidates)}) — "
+            f"GR-2 forbids producing creatives without the brand mark."
+        )
+
+    def apply_watermark(
+        self, image: Image.Image, campaign_id: str | None = None
+    ) -> Image.Image:
         """Composite the brand watermark onto the bottom-right corner (GR-2).
 
-        Raises WatermarkMissingError if the watermark asset is absent —
+        Uses the campaign-specific brand kit when one exists
+        (assets/{campaign_id}/watermark.png), falling back to the global
+        mark. Raises WatermarkMissingError if neither asset exists —
         per the SPEC this is a hard gate, never a silent skip.
         """
-        if not self.watermark_path.is_file():
-            raise WatermarkMissingError(
-                f"Brand watermark not found at {self.watermark_path} — "
-                f"GR-2 forbids producing creatives without the brand mark."
-            )
+        watermark_path = self.resolve_watermark_path(campaign_id)
 
         base = image.convert("RGBA")
-        watermark = Image.open(self.watermark_path).convert("RGBA")
+        watermark = Image.open(watermark_path).convert("RGBA")
 
         # Scale watermark to ~22% of creative width, keep aspect.
         target_w = max(1, int(base.width * 0.22))
