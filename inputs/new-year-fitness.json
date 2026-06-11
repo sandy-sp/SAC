@@ -1,0 +1,25 @@
+{
+  "campaign_id": "new-year-fitness",
+  "target_regions": [
+    "Global"
+  ],
+  "target_audiences": [
+    "Gym Goers"
+  ],
+  "campaign_messages": [
+    "Crush your goals.",
+    "A guaranteed miracle for your waistline!"
+  ],
+  "products": [
+    {
+      "product_id": "yoga-mat-pro",
+      "name": "Pro-Grip Yoga Mat",
+      "description": "Non-slip, eco-friendly yoga mat."
+    },
+    {
+      "product_id": "protein-powder-max",
+      "name": "Max Recovery Protein",
+      "description": "Plant-based protein powder for post-workout recovery."
+    }
+  ]
+}

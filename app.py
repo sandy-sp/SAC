@@ -2,8 +2,13 @@
 
 Thin UI wrapper over the locked core pipeline in src/ (models,
 guardrails, image processing, providers). All business logic stays in
-src/; this module only handles brief upload, orchestration, and visual
-presentation of the generated creatives.
+src/; this module handles brief import / manual building, campaign
+merging, and visual presentation of the generated creatives.
+
+Phase 5 enterprise behavior:
+- Assets are sandboxed per campaign: assets/{campaign_id}/{product_id}.ext
+- A brief whose campaign_id already exists in inputs/ is merged with the
+  stored brief (regions/audiences union, product upsert) before running.
 """
 
 import io
@@ -20,6 +25,7 @@ from src.guardrails import PROHIBITED_WORDS, validate_campaign_message
 from src.image_processor import SUPPORTED_RATIOS, ImageProcessor, WatermarkMissingError
 from src.models import CampaignBrief
 from src.providers import MockImageProvider
+from src.utils import merge_and_persist_brief
 
 ASSETS_DIR = Path("assets")
 OUTPUTS_DIR = Path("outputs")
@@ -32,6 +38,10 @@ st.set_page_config(
     layout="wide",
 )
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def parse_brief_payload(raw: bytes, filename: str) -> dict:
     """Decode an uploaded brief file (JSON or YAML) into a dict."""
@@ -54,25 +64,46 @@ def find_prohibited_words(message: str) -> list[str]:
     ]
 
 
+def campaign_assets_dir(campaign_id: str) -> Path:
+    """Per-campaign asset sandbox, created on demand."""
+    directory = ASSETS_DIR / campaign_id
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def resolve_base_image(
-    product_id: str, prompt: str, provider: MockImageProvider
+    campaign_id: str, product_id: str, prompt: str, provider: MockImageProvider
 ) -> tuple[Image.Image, bool]:
-    """Reuse a local asset when present, otherwise generate (FR-2/FR-3)."""
+    """Reuse a sandboxed local asset when present, otherwise generate (FR-2/FR-3)."""
+    directory = campaign_assets_dir(campaign_id)
     for extension in ASSET_EXTENSIONS:
-        candidate = ASSETS_DIR / f"{product_id}{extension}"
+        candidate = directory / f"{product_id}{extension}"
         if candidate.is_file():
             return Image.open(candidate), True
     image_bytes = provider.generate_image(prompt, 1080, 1080)
     return Image.open(io.BytesIO(image_bytes)), False
 
 
-def render_sidebar() -> dict | None:
-    """Brief selection UI. Returns the raw brief payload or None."""
-    st.sidebar.title("🎨 SAC")
-    st.sidebar.caption("Creative Automation for Social Ad Campaigns")
-    st.sidebar.divider()
+def save_uploaded_asset(campaign_id: str, product_id: str, uploaded_file) -> Path:
+    """Persist a manually uploaded base image into the campaign sandbox."""
+    extension = Path(uploaded_file.name).suffix.lower()
+    if extension not in ASSET_EXTENSIONS:
+        extension = ".png"
+    destination = campaign_assets_dir(campaign_id) / f"{product_id}{extension}"
+    destination.write_bytes(uploaded_file.getvalue())
+    return destination
 
-    st.sidebar.subheader("1 · Campaign Brief")
+
+def split_csv(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: session controls + brief sources
+# ---------------------------------------------------------------------------
+
+def render_import_mode() -> bool:
+    """Import-brief sidebar section. Returns True when a run was requested."""
     uploaded = st.sidebar.file_uploader(
         "Upload a brief (JSON or YAML)",
         type=["json", "yaml", "yml"],
@@ -94,8 +125,112 @@ def render_sidebar() -> dict | None:
     if "brief_source" in st.session_state:
         st.sidebar.success(f"Brief loaded: `{st.session_state['brief_source']}`")
 
-    return st.session_state.get("brief_payload")
+    run_requested = False
+    if "brief_payload" in st.session_state:
+        st.sidebar.divider()
+        st.sidebar.subheader("2 · Execution")
+        run_requested = st.sidebar.button(
+            "🚀 Run Pipeline", type="primary", width="stretch"
+        )
+    return run_requested
 
+
+def render_manual_builder() -> bool:
+    """Manual brief builder form. Returns True when Save & Run was submitted.
+
+    On submit: saves any uploaded base images into the campaign asset
+    sandbox and stores the built payload in session state.
+    """
+    with st.sidebar.form("manual_builder", clear_on_submit=False):
+        st.subheader("Campaign")
+        campaign_id = st.text_input("Campaign ID", placeholder="spring-launch-2026")
+        regions_raw = st.text_input("Regions (comma-separated)", placeholder="US, DE, JP")
+        audiences_raw = st.text_input(
+            "Audiences (comma-separated)", placeholder="Parents, Students"
+        )
+
+        product_inputs = []
+        for slot in (1, 2):
+            st.divider()
+            st.subheader(f"Product {slot}")
+            product_inputs.append(
+                {
+                    "product_id": st.text_input(f"Product {slot} · ID", key=f"p{slot}_id"),
+                    "name": st.text_input(f"Product {slot} · Name", key=f"p{slot}_name"),
+                    "description": st.text_area(
+                        f"Product {slot} · Description", key=f"p{slot}_desc"
+                    ),
+                    "message": st.text_input(
+                        f"Product {slot} · Campaign Message", key=f"p{slot}_msg"
+                    ),
+                    "image": st.file_uploader(
+                        f"Product {slot} · Base image (optional)",
+                        type=["jpg", "jpeg", "png"],
+                        key=f"p{slot}_img",
+                    ),
+                }
+            )
+
+        submitted = st.form_submit_button("💾 Save & Run", type="primary", width="stretch")
+
+    if not submitted:
+        return False
+
+    payload = {
+        "campaign_id": campaign_id.strip(),
+        "target_regions": split_csv(regions_raw),
+        "target_audiences": split_csv(audiences_raw),
+        "campaign_messages": [entry["message"].strip() for entry in product_inputs],
+        "products": [
+            {
+                "product_id": entry["product_id"].strip(),
+                "name": entry["name"].strip(),
+                "description": entry["description"].strip(),
+            }
+            for entry in product_inputs
+        ],
+    }
+    st.session_state["brief_payload"] = payload
+    st.session_state["brief_source"] = "manual builder"
+
+    # Save uploaded base images into the campaign sandbox so asset
+    # resolution finds and reuses them.
+    if payload["campaign_id"]:
+        for entry in product_inputs:
+            if entry["image"] is not None and entry["product_id"].strip():
+                saved = save_uploaded_asset(
+                    payload["campaign_id"], entry["product_id"].strip(), entry["image"]
+                )
+                st.sidebar.info(f"Saved asset: `{saved}`", icon="🖼️")
+
+    return True
+
+
+def render_sidebar() -> bool:
+    """Full sidebar. Returns True when a pipeline run was requested."""
+    st.sidebar.title("🎨 SAC")
+    st.sidebar.caption("Creative Automation for Social Ad Campaigns")
+
+    if st.sidebar.button("🔄 Start Over / Clear Session", width="stretch"):
+        st.session_state.clear()
+        st.rerun()
+
+    st.sidebar.divider()
+    st.sidebar.subheader("1 · Campaign Brief")
+    mode = st.sidebar.radio(
+        "Brief source",
+        ["Import Brief", "Manual Builder"],
+        horizontal=True,
+    )
+
+    if mode == "Import Brief":
+        return render_import_mode()
+    return render_manual_builder()
+
+
+# ---------------------------------------------------------------------------
+# Main area
+# ---------------------------------------------------------------------------
 
 def render_brief_summary(brief: CampaignBrief) -> None:
     with st.expander("📄 Brief overview", expanded=True):
@@ -149,11 +284,16 @@ def run_pipeline(brief: CampaignBrief) -> None:
 
         prompt = f"Product photo: {product.name}. {product.description}"
         with st.spinner(f"Resolving base asset for {product.product_id}…"):
-            base_image, reused = resolve_base_image(product.product_id, prompt, provider)
+            base_image, reused = resolve_base_image(
+                brief.campaign_id, product.product_id, prompt, provider
+            )
         assets_reused += int(reused)
         assets_generated += int(not reused)
         if reused:
-            st.info(f"↺ Reused local asset for `{product.product_id}`", icon="📁")
+            st.info(
+                f"↺ Reused sandboxed asset `assets/{brief.campaign_id}/{product.product_id}`",
+                icon="📁",
+            )
         else:
             st.info(
                 f"✦ No local asset — generated via provider `{provider.provider_name}`",
@@ -206,12 +346,13 @@ def main() -> None:
         "guardrailed, branded, multi-ratio."
     )
 
-    payload = render_sidebar()
+    run_requested = render_sidebar()
+    payload = st.session_state.get("brief_payload")
 
     if payload is None:
         st.info(
-            "⬅️ Upload a campaign brief (JSON/YAML) in the sidebar, "
-            "or load the default mock brief to get started.",
+            "⬅️ Import a campaign brief (JSON/YAML) or build one manually "
+            "in the sidebar to get started.",
             icon="👋",
         )
         return
@@ -225,14 +366,28 @@ def main() -> None:
             st.markdown(f"- `{location}`: {error['msg']}")
         return
 
-    render_brief_summary(brief)
-
-    st.sidebar.divider()
-    st.sidebar.subheader("2 · Execution")
-    run_clicked = st.sidebar.button("🚀 Run Pipeline", type="primary", width="stretch")
-    if not run_clicked:
-        st.success("Brief validated. Hit **Run Pipeline** in the sidebar when ready.", icon="✅")
+    if not run_requested:
+        render_brief_summary(brief)
+        st.success(
+            "Brief validated. Hit **Run Pipeline** (Import) or **Save & Run** "
+            "(Manual Builder) in the sidebar when ready.",
+            icon="✅",
+        )
         return
+
+    # Campaign merging: combine with the stored brief for this campaign_id
+    # (if any) and persist the result before executing.
+    brief, was_merged = merge_and_persist_brief(brief)
+    st.session_state["brief_payload"] = brief.model_dump()
+    if was_merged:
+        st.info(
+            f"⇄ Campaign `{brief.campaign_id}` already exists — merged with the "
+            f"stored brief and saved to `inputs/{brief.campaign_id}.json` "
+            f"(regions/audiences deduplicated, products upserted).",
+            icon="🧬",
+        )
+
+    render_brief_summary(brief)
 
     try:
         run_pipeline(brief)

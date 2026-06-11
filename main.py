@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
 from PIL import Image
 from pydantic import ValidationError
 from rich.console import Console
@@ -31,6 +32,7 @@ from src.guardrails import validate_campaign_message
 from src.image_processor import SUPPORTED_RATIOS, ImageProcessor, WatermarkMissingError
 from src.models import CampaignBrief
 from src.providers import MockImageProvider
+from src.utils import merge_and_persist_brief
 
 ASSETS_DIR = Path("assets")
 OUTPUTS_DIR = Path("outputs")
@@ -54,14 +56,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_brief(path: Path) -> CampaignBrief:
-    """Parse and validate the campaign brief (FR-1). Exits cleanly on failure."""
+    """Parse and validate the campaign brief, JSON or YAML (FR-1). Exits cleanly on failure."""
     if not path.is_file():
         console.print(f"[bold red]✗ Brief not found:[/bold red] {path}")
         sys.exit(1)
     try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        console.print(f"[bold red]✗ Brief is not valid JSON:[/bold red] {exc}")
+        if path.suffix.lower() in (".yaml", ".yml"):
+            payload = yaml.safe_load(path.read_text())
+        else:
+            payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        console.print(f"[bold red]✗ Brief is not valid JSON/YAML:[/bold red] {exc}")
         sys.exit(1)
     try:
         return CampaignBrief.model_validate(payload)
@@ -74,11 +79,16 @@ def load_brief(path: Path) -> CampaignBrief:
 
 
 def resolve_base_image(
-    product_id: str, prompt: str, provider: MockImageProvider
+    campaign_id: str, product_id: str, prompt: str, provider: MockImageProvider
 ) -> tuple[Image.Image, bool]:
-    """Return the product's base image and whether a local asset was reused (FR-2/FR-3)."""
+    """Return the product's base image and whether a local asset was reused (FR-2/FR-3).
+
+    Assets are sandboxed per campaign: assets/{campaign_id}/{product_id}.ext.
+    """
+    campaign_assets_dir = ASSETS_DIR / campaign_id
+    campaign_assets_dir.mkdir(parents=True, exist_ok=True)
     for extension in ASSET_EXTENSIONS:
-        candidate = ASSETS_DIR / f"{product_id}{extension}"
+        candidate = campaign_assets_dir / f"{product_id}{extension}"
         if candidate.is_file():
             console.log(f"[green]↺ Reusing local asset[/green] {candidate}")
             return Image.open(candidate), True
@@ -103,6 +113,13 @@ def main() -> None:
     )
 
     brief = load_brief(args.brief)
+    brief, was_merged = merge_and_persist_brief(brief)
+    if was_merged:
+        console.print(
+            f"[bold cyan]⇄ Campaign[/bold cyan] [bold]{brief.campaign_id}[/bold] "
+            f"[bold cyan]already exists — merged with stored brief "
+            f"(inputs/{brief.campaign_id}.json).[/bold cyan]"
+        )
     console.print(
         f"[bold green]✔ Brief validated:[/bold green] [bold]{brief.campaign_id}[/bold] — "
         f"{len(brief.products)} products, regions: {', '.join(brief.target_regions)}, "
@@ -149,7 +166,9 @@ def main() -> None:
                 continue
 
             prompt = f"Product photo: {product.name}. {product.description}"
-            base_image, reused = resolve_base_image(product.product_id, prompt, provider)
+            base_image, reused = resolve_base_image(
+                brief.campaign_id, product.product_id, prompt, provider
+            )
             assets_reused += int(reused)
             assets_generated += int(not reused)
 

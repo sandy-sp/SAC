@@ -31,8 +31,9 @@ Built for a global consumer goods scenario: hundreds of localized campaigns per 
 
 | Path | Responsibility |
 |------|----------------|
-| `app.py` | **Streamlit web app** — primary entry point; brief upload, live pipeline feedback, in-browser creative gallery |
+| `app.py` | **Streamlit web app** — primary entry point; brief import / manual builder, live pipeline feedback, in-browser creative gallery |
 | `main.py` | CLI orchestrator — headless alternative with rich terminal UX |
+| `src/utils.py` | Campaign merging — region/audience dedupe, product upsert, brief persistence |
 | `src/models.py` | Pydantic brief schema; enforces ≥2 products (FR-1) |
 | `src/guardrails.py` | Legal content check — prohibited-word scan, hard gate (GR-1) |
 | `src/image_processor.py` | Aspect-ratio cropping, text rendering, watermark overlay (FR-5/6, GR-2) |
@@ -45,6 +46,11 @@ Built for a global consumer goods scenario: hundreds of localized campaigns per 
 - **Guardrails are hard gates:** a flagged campaign message skips the product entirely; a missing brand watermark aborts with an explicit error. No creative ships unchecked.
 - **Asset reuse before generation:** local assets in `assets/` are reused when present (`{product_id}.jpg/.jpeg/.png`); GenAI is the fallback, not the default — controlling cost and preserving approved imagery.
 - **No distortion:** ratio conversion uses scale-to-cover + center-crop (`ImageOps.fit`), never stretching.
+
+### Enterprise Features
+
+- **Campaign Sandboxing (Asset Isolation):** every campaign gets its own asset namespace — local base images live at `assets/{campaign_id}/{product_id}.ext`, created on demand. Campaigns can never pick up each other's imagery, so hundreds of concurrent campaigns stay cleanly isolated. (The shared brand watermark remains global at `assets/watermark.png`.)
+- **Intelligent Campaign Merging (Upserting):** submitting a brief whose `campaign_id` already exists in `inputs/` triggers an automatic merge with the stored brief before the run: `target_regions` and `target_audiences` are unioned and deduplicated, and `products` are **upserted** by `product_id` — existing products get their details (and paired campaign message) updated, new products are appended. The merged result is written back to `inputs/{campaign_id}.json`, making the stored brief the cumulative source of truth for that campaign.
 
 ---
 
@@ -71,9 +77,9 @@ streamlit run app.py
 
 Then in the browser (defaults to http://localhost:8501):
 
-1. **Load a brief** — upload a JSON/YAML brief in the sidebar, or click **Load Default Mock Brief**.
-2. **Run Pipeline** — hit the button in the sidebar.
-3. **Watch it work** — live progress bar, per-product status, and the finished 1:1 / 9:16 / 16:9 creatives displayed side by side for every successful product.
+1. **Load a brief** — choose **Import Brief** (upload JSON/YAML or click **Load Default Mock Brief**) or **Manual Builder** (form-based entry for the campaign plus two products, with optional base-image uploads that are saved straight into the campaign's asset sandbox).
+2. **Run** — hit **Run Pipeline** (Import) or **Save & Run** (Manual Builder) in the sidebar. Re-running an existing `campaign_id` merges the briefs first (see Enterprise Features).
+3. **Watch it work** — live progress bar, per-product status, and the finished 1:1 / 9:16 / 16:9 creatives displayed side by side for every successful product. **Start Over / Clear Session** at the top of the sidebar resets everything.
 
 The bundled `inputs/mock_brief.json` demonstrates both pipeline paths:
 
@@ -104,7 +110,7 @@ python main.py --brief inputs/my.json   # custom brief
 }
 ```
 
-Briefs are validated on load; at least **two products** are required. `campaign_messages[i]` pairs with `products[i]` (falling back to the first message). To reuse your own imagery, drop `assets/{product_id}.jpg` in place before running.
+Briefs are validated on load; at least **two products** are required. `campaign_messages[i]` pairs with `products[i]` (falling back to the first message). To reuse your own imagery, drop `assets/{campaign_id}/{product_id}.jpg` in place before running (or upload it via the Manual Builder).
 
 ---
 
