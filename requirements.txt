@@ -6,6 +6,9 @@ Pillow
 # CLI UX (progress bars, rich logging, summary tables)
 rich
 
+# Web UI (Streamlit demo front-end)
+streamlit
+
 # Brief schema validation (JSON/YAML inputs)
 pydantic
 

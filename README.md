@@ -1,8 +1,8 @@
 # SAC — Social Ad Campaigns
 
-**Creative automation pipeline for scalable, localized social ad campaigns (Python CLI PoC).**
+**Creative automation for scalable, localized social ad campaigns — a Streamlit web app over a Python pipeline core.**
 
-SAC ingests a structured campaign brief, resolves or generates product imagery, enforces legal and brand guardrails, and emits ready-to-publish social ad creatives in multiple aspect ratios — turning a manual, per-variant creative workflow into a single command.
+SAC ingests a structured campaign brief, resolves or generates product imagery, enforces legal and brand guardrails, and emits ready-to-publish social ad creatives in multiple aspect ratios — turning a manual, per-variant creative workflow into a single click.
 
 Built for a global consumer goods scenario: hundreds of localized campaigns per month, where manual content creation is the bottleneck. See [`docs/SPEC.md`](docs/SPEC.md) for the full technical specification.
 
@@ -31,7 +31,8 @@ Built for a global consumer goods scenario: hundreds of localized campaigns per 
 
 | Path | Responsibility |
 |------|----------------|
-| `main.py` | CLI orchestrator — wires the full pipeline with rich terminal UX |
+| `app.py` | **Streamlit web app** — primary entry point; brief upload, live pipeline feedback, in-browser creative gallery |
+| `main.py` | CLI orchestrator — headless alternative with rich terminal UX |
 | `src/models.py` | Pydantic brief schema; enforces ≥2 products (FR-1) |
 | `src/guardrails.py` | Legal content check — prohibited-word scan, hard gate (GR-1) |
 | `src/image_processor.py` | Aspect-ratio cropping, text rendering, watermark overlay (FR-5/6, GR-2) |
@@ -62,19 +63,31 @@ No cloud credentials are needed — the PoC runs fully offline via the mock prov
 
 ---
 
-## Running the CLI
+## Running the Web App
+
+```bash
+streamlit run app.py
+```
+
+Then in the browser (defaults to http://localhost:8501):
+
+1. **Load a brief** — upload a JSON/YAML brief in the sidebar, or click **Load Default Mock Brief**.
+2. **Run Pipeline** — hit the button in the sidebar.
+3. **Watch it work** — live progress bar, per-product status, and the finished 1:1 / 9:16 / 16:9 creatives displayed side by side for every successful product.
+
+The bundled `inputs/mock_brief.json` demonstrates both pipeline paths:
+
+- **Summer Skincare Bundle** — clean message → full generation across all three ratios, shown in-browser.
+- **Winter Hydration Kit** — message contains a prohibited word ("guaranteed") → flagged by the legal guardrail with a prominent error box, and skipped.
+
+### Headless / CLI Mode
+
+The original CLI remains available for scripted or terminal-only use:
 
 ```bash
 python main.py                          # uses inputs/mock_brief.json
 python main.py --brief inputs/my.json   # custom brief
 ```
-
-The bundled `inputs/mock_brief.json` demonstrates both pipeline paths:
-
-- **Summer Skincare Bundle** — clean message → full generation across all three ratios.
-- **Winter Hydration Kit** — message contains a prohibited word ("guaranteed") → flagged by the legal guardrail and skipped, visibly logged.
-
-The run shows live progress bars, per-step logging (asset reuse vs. generation, per-ratio saves, guardrail verdicts), and ends with an execution summary table.
 
 ### Campaign Brief Format
 
