@@ -19,7 +19,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from rich.console import Console
 
-from src.providers.base import ImageGenerationProvider
+from src.providers.base import ImageGenerationProvider, ProviderGenerationError
 
 console = Console()
 
@@ -44,7 +44,7 @@ _TITAN_SIZES: list[tuple[int, int]] = [
 ]
 
 
-class BedrockGenerationError(RuntimeError):
+class BedrockGenerationError(ProviderGenerationError):
     """Raised when Bedrock invocation fails (credentials, access, throttling…)."""
 
 
@@ -72,16 +72,36 @@ def _nearest_titan_size(width: int, height: int) -> tuple[int, int]:
 class AwsBedrockProvider(ImageGenerationProvider):
     """Live GenAI backend via Amazon Bedrock (boto3 runtime client)."""
 
-    def __init__(self, model_id: str | None = None, region_name: str | None = None):
+    def __init__(
+        self,
+        model_id: str | None = None,
+        region_name: str | None = None,
+        credentials: dict | None = None,
+    ):
+        super().__init__(credentials)
         self.model_id = model_id or os.environ.get(
             "SAC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID
         )
-        self._client = boto3.client(
-            "bedrock-runtime",
-            region_name=region_name
+
+        client_kwargs: dict = {
+            "region_name": region_name
             or os.environ.get("SAC_BEDROCK_REGION")
             or os.environ.get("AWS_DEFAULT_REGION", DEFAULT_REGION),
-        )
+        }
+
+        # BYOK: explicit credentials take precedence; otherwise boto3's
+        # default chain (env vars, ~/.aws, instance profile) applies.
+        # Values are passed straight through — never printed or logged.
+        access_key = self.credentials.get("aws_access_key_id")
+        secret_key = self.credentials.get("aws_secret_access_key")
+        session_token = self.credentials.get("aws_session_token")
+        if access_key and secret_key:
+            client_kwargs["aws_access_key_id"] = access_key
+            client_kwargs["aws_secret_access_key"] = secret_key
+            if session_token:
+                client_kwargs["aws_session_token"] = session_token
+
+        self._client = boto3.client("bedrock-runtime", **client_kwargs)
 
     @property
     def provider_name(self) -> str:

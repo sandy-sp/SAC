@@ -21,5 +21,11 @@ boto3
 # Environment variable loading (.env for cloud credentials/region)
 python-dotenv
 
+# Adobe Firefly REST integration (S2S OAuth + Image API)
+requests
+
+# Google AI Studio integration (Gemini image generation)
+google-generativeai
+
 # GCP integration (Vertex AI image generation strategy)
 google-cloud-aiplatform
