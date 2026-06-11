@@ -1,0 +1,19 @@
+# SAC — Social Ad Campaigns (PoC) dependencies
+
+# Image processing (aspect ratios, text rendering, watermark overlay)
+Pillow
+
+# CLI UX (progress bars, rich logging, summary tables)
+rich
+
+# Brief schema validation (JSON/YAML inputs)
+pydantic
+
+# YAML brief parsing
+PyYAML
+
+# AWS integration (Bedrock image generation strategy)
+boto3
+
+# GCP integration (Vertex AI image generation strategy)
+google-cloud-aiplatform

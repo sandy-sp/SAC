@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# OS
+.DS_Store
+
+# Generated creatives (keep folder, ignore contents)
+outputs/*
+!outputs/.gitkeep
